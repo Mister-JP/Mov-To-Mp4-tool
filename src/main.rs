@@ -62,12 +62,15 @@ async fn convert_video(mut payload: Multipart) -> Result<HttpResponse, Error> {
                 temp_filepath = Some(filepath.clone());
                 
                 // Save file
-                let mut file = web::block(|| std::fs::File::create(&filepath))
+                let filepath_clone = filepath.clone();
+                let mut file = web::block(move || std::fs::File::create(&filepath_clone))
                     .await?
                     .unwrap();
                 
                 while let Some(chunk) = field.try_next().await? {
-                    file = web::block(move || file.write_all(&chunk).map(|_| file))
+                    // Clone file to move into closure
+                    let mut file_clone = file;
+                    file = web::block(move || file_clone.write_all(&chunk).map(|_| file_clone))
                         .await?
                         .unwrap();
                 }
