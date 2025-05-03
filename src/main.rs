@@ -1,0 +1,190 @@
+use actix_files::Files;
+use actix_multipart::Multipart;
+use actix_web::{web, App, Error, HttpResponse, HttpServer, Responder};
+use futures_util::TryStreamExt;
+use log::{error, info};
+use serde::{Deserialize, Serialize};
+use std::io::Write;
+use std::process::Command;
+use std::path::Path;
+use std::fs;
+use tera::{Tera, Context};
+use uuid::Uuid;
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ConversionResult {
+    success: bool,
+    message: String,
+    original_filename: Option<String>,
+    output_filename: Option<String>,
+}
+
+async fn index(tmpl: web::Data<Tera>) -> impl Responder {
+    let mut context = Context::new();
+    context.insert("app_name", "MOV to MP4 Converter");
+    context.insert("app_description", "Convert your MOV videos to MP4 format easily");
+    
+    match tmpl.render("index.html", &context) {
+        Ok(html) => HttpResponse::Ok().content_type("text/html").body(html),
+        Err(e) => {
+            error!("Template error: {}", e);
+            HttpResponse::InternalServerError().body("Template error")
+        }
+    }
+}
+
+async fn convert_video(mut payload: Multipart) -> Result<HttpResponse, Error> {
+    // Create directories if they don't exist
+    if !Path::new("uploads").exists() {
+        fs::create_dir("uploads").unwrap();
+    }
+    if !Path::new("output").exists() {
+        fs::create_dir("output").unwrap();
+    }
+
+    let mut original_filename = None;
+    let mut temp_filepath = None;
+    
+    // Process multipart form data
+    while let Some(mut field) = payload.try_next().await? {
+        let content_disposition = field.content_disposition();
+        
+        if let Some(name) = content_disposition.get_name() {
+            if name == "file" {
+                let filename = content_disposition
+                    .get_filename()
+                    .map(|f| f.to_string())
+                    .unwrap_or_else(|| Uuid::new_v4().to_string());
+                
+                original_filename = Some(filename.clone());
+                
+                let filepath = format!("uploads/{}", filename);
+                temp_filepath = Some(filepath.clone());
+                
+                // Save file
+                let mut file = web::block(|| std::fs::File::create(&filepath))
+                    .await?
+                    .unwrap();
+                
+                while let Some(chunk) = field.try_next().await? {
+                    file = web::block(move || file.write_all(&chunk).map(|_| file))
+                        .await?
+                        .unwrap();
+                }
+                
+                info!("File saved: {}", filepath);
+            }
+        }
+    }
+    
+    if let Some(filepath) = temp_filepath {
+        if let Some(filename) = original_filename.clone() {
+            // Generate output filename
+            let uuid = Uuid::new_v4();
+            let output_filename = format!("{}.mp4", uuid);
+            let output_filepath = format!("output/{}", output_filename);
+            
+            // Convert using ffmpeg
+            let output = Command::new("ffmpeg")
+                .arg("-i")
+                .arg(&filepath)
+                .arg("-vcodec")
+                .arg("h264")
+                .arg("-acodec")
+                .arg("aac")
+                .arg(&output_filepath)
+                .output();
+            
+            match output {
+                Ok(output) => {
+                    if output.status.success() {
+                        info!("Conversion successful: {} -> {}", filepath, output_filepath);
+                        
+                        let result = ConversionResult {
+                            success: true,
+                            message: "Conversion successful!".to_string(),
+                            original_filename: Some(filename),
+                            output_filename: Some(output_filename),
+                        };
+                        
+                        return Ok(HttpResponse::Ok().json(result));
+                    } else {
+                        let error_message = String::from_utf8_lossy(&output.stderr);
+                        error!("Conversion failed: {}", error_message);
+                        
+                        let result = ConversionResult {
+                            success: false,
+                            message: format!("Conversion failed: {}", error_message),
+                            original_filename: None,
+                            output_filename: None,
+                        };
+                        
+                        return Ok(HttpResponse::InternalServerError().json(result));
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to execute FFmpeg: {}", e);
+                    
+                    let result = ConversionResult {
+                        success: false,
+                        message: format!("Failed to execute FFmpeg: {}", e),
+                        original_filename: None,
+                        output_filename: None,
+                    };
+                    
+                    return Ok(HttpResponse::InternalServerError().json(result));
+                }
+            }
+        }
+    }
+    
+    let result = ConversionResult {
+        success: false,
+        message: "No file was uploaded".to_string(),
+        original_filename: None,
+        output_filename: None,
+    };
+    
+    Ok(HttpResponse::BadRequest().json(result))
+}
+
+async fn download(req: web::Path<String>) -> impl Responder {
+    let filename = req.into_inner();
+    let filepath = format!("output/{}", filename);
+    
+    if Path::new(&filepath).exists() {
+        actix_files::NamedFile::open(filepath)
+            .map_err(|e| {
+                error!("File error: {}", e);
+                actix_web::error::ErrorInternalServerError(e)
+            })
+    } else {
+        Err(actix_web::error::ErrorNotFound("File not found"))
+    }
+}
+
+#[actix_web::main]
+async fn main() -> std::io::Result<()> {
+    env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
+    
+    info!("Starting server at http://127.0.0.1:8080");
+    
+    // Initialize templates
+    let mut tera = Tera::default();
+    tera.add_template_files(vec![
+        ("src/templates/index.html", Some("index.html")),
+    ]).unwrap();
+    
+    HttpServer::new(move || {
+        App::new()
+            .app_data(web::Data::new(tera.clone()))
+            .service(web::resource("/").route(web::get().to(index)))
+            .service(web::resource("/convert").route(web::post().to(convert_video)))
+            .service(web::resource("/download/{filename}").route(web::get().to(download)))
+            .service(Files::new("/static", "./static").show_files_listing())
+            .service(Files::new("/output", "./output").show_files_listing())
+    })
+    .bind("127.0.0.1:8080")?
+    .run()
+    .await
+}

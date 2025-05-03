@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ app_name }}</title>
+    <link rel="stylesheet" href="/static/css/styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>{{ app_name }}</h1>
+            <p>{{ app_description }}</p>
+        </header>
+        
+        <main>
+            <div class="upload-container">
+                <div class="drop-area" id="dropArea">
+                    <div class="drop-message">
+                        <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                            <polyline points="17 8 12 3 7 8"></polyline>
+                            <line x1="12" y1="3" x2="12" y2="15"></line>
+                        </svg>
+                        <p>Drag & Drop your MOV file here<br>or</p>
+                        <button id="fileSelectBtn" class="btn">Select File</button>
+                        <input type="file" id="fileInput" accept=".mov" style="display: none;">
+                    </div>
+                </div>
+                <div class="file-info" id="fileInfo" style="display: none;">
+                    <div class="selected-file">
+                        <h3>Selected File:</h3>
+                        <p id="fileName"></p>
+                        <p id="fileSize"></p>
+                    </div>
+                    <button id="convertBtn" class="btn btn-primary">Convert to MP4</button>
+                    <button id="cancelBtn" class="btn btn-secondary">Cancel</button>
+                </div>
+            </div>
+            
+            <div class="progress-container" id="progressContainer" style="display: none;">
+                <h3>Converting...</h3>
+                <div class="progress-bar">
+                    <div class="progress" id="progress"></div>
+                </div>
+                <p id="progressText">0%</p>
+            </div>
+            
+            <div class="result-container" id="resultContainer" style="display: none;">
+                <div class="result-success" id="resultSuccess" style="display: none;">
+                    <h3>Conversion Successful!</h3>
+                    <p>Your file has been converted successfully.</p>
+                    <button id="downloadBtn" class="btn btn-primary">Download MP4</button>
+                </div>
+                <div class="result-error" id="resultError" style="display: none;">
+                    <h3>Conversion Failed</h3>
+                    <p id="errorMessage"></p>
+                    <button id="tryAgainBtn" class="btn btn-secondary">Try Again</button>
+                </div>
+            </div>
+        </main>
+        
+        <footer>
+            <p>&copy; 2025 MOV to MP4 Converter. Made with ❤️ using Rust.</p>
+        </footer>
+    </div>
+    
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
