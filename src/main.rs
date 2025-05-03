@@ -33,6 +33,21 @@ async fn index(tmpl: web::Data<Tera>) -> impl Responder {
     }
 }
 
+// Helper function to get a user-friendly error message
+fn get_user_friendly_error(error_message: &str) -> String {
+    if error_message.contains("Output file does not contain any stream") {
+        "The input file appears to be corrupted or doesn't contain valid video/audio streams".to_string()
+    } else if error_message.contains("Invalid data found") {
+        "The file contains invalid data or is corrupted".to_string()
+    } else if error_message.contains("No such file or directory") {
+        "FFmpeg failed to access the file. Make sure FFmpeg is properly installed.".to_string()
+    } else if error_message.contains("Invalid argument") {
+        "Invalid arguments passed to FFmpeg. The file might be corrupted.".to_string()
+    } else {
+        format!("Conversion failed: {}", error_message)
+    }
+}
+
 async fn convert_video(mut payload: Multipart) -> Result<HttpResponse, Error> {
     // Create directories if they don't exist
     if !Path::new("uploads").exists() {
@@ -82,56 +97,100 @@ async fn convert_video(mut payload: Multipart) -> Result<HttpResponse, Error> {
     
     if let Some(filepath) = temp_filepath {
         if let Some(filename) = original_filename.clone() {
-            // Generate output filename
-            let uuid = Uuid::new_v4();
-            let output_filename = format!("{}.mp4", uuid);
-            let output_filepath = format!("output/{}", output_filename);
-            
-            // Convert using ffmpeg
-            let output = Command::new("ffmpeg")
+            // First, probe the file to check if it's valid
+            let probe_output = Command::new("ffmpeg")
                 .arg("-i")
                 .arg(&filepath)
-                .arg("-vcodec")
-                .arg("h264")
-                .arg("-acodec")
-                .arg("aac")
-                .arg(&output_filepath)
                 .output();
-            
-            match output {
+                
+            match probe_output {
                 Ok(output) => {
-                    if output.status.success() {
-                        info!("Conversion successful: {} -> {}", filepath, output_filepath);
-                        
-                        let result = ConversionResult {
-                            success: true,
-                            message: "Conversion successful!".to_string(),
-                            original_filename: Some(filename),
-                            output_filename: Some(output_filename),
-                        };
-                        
-                        return Ok(HttpResponse::Ok().json(result));
-                    } else {
-                        let error_message = String::from_utf8_lossy(&output.stderr);
-                        error!("Conversion failed: {}", error_message);
-                        
+                    let probe_result = String::from_utf8_lossy(&output.stderr);
+                    info!("File probe result: {}", probe_result);
+                    
+                    // Check if the file is completely invalid
+                    if probe_result.contains("Invalid data found") || probe_result.contains("does not contain any stream") {
                         let result = ConversionResult {
                             success: false,
-                            message: format!("Conversion failed: {}", error_message),
-                            original_filename: None,
+                            message: "The file appears to be corrupted or is not a valid video file.".to_string(),
+                            original_filename: Some(filename),
                             output_filename: None,
                         };
                         
-                        return Ok(HttpResponse::InternalServerError().json(result));
+                        return Ok(HttpResponse::BadRequest().json(result));
+                    }
+                    
+                    // Generate output filename
+                    let uuid = Uuid::new_v4();
+                    let output_filename = format!("{}.mp4", uuid);
+                    let output_filepath = format!("output/{}", output_filename);
+                    
+                    // Convert using ffmpeg with more robust parameters
+                    let output = Command::new("ffmpeg")
+                        .arg("-i")
+                        .arg(&filepath)
+                        .arg("-vcodec")
+                        .arg("h264")
+                        .arg("-acodec")
+                        .arg("aac")
+                        .arg("-strict")
+                        .arg("-2")       // More lenient processing
+                        .arg("-f")
+                        .arg("mp4")      // Force output format
+                        .arg("-y")       // Overwrite output files
+                        .arg(&output_filepath)
+                        .output();
+                    
+                    match output {
+                        Ok(output) => {
+                            if output.status.success() {
+                                info!("Conversion successful: {} -> {}", filepath, output_filepath);
+                                
+                                let result = ConversionResult {
+                                    success: true,
+                                    message: "Conversion successful!".to_string(),
+                                    original_filename: Some(filename),
+                                    output_filename: Some(output_filename),
+                                };
+                                
+                                return Ok(HttpResponse::Ok().json(result));
+                            } else {
+                                let error_message = String::from_utf8_lossy(&output.stderr);
+                                error!("Conversion failed: {}", error_message);
+                                
+                                let user_friendly_message = get_user_friendly_error(&error_message);
+                                
+                                let result = ConversionResult {
+                                    success: false,
+                                    message: user_friendly_message,
+                                    original_filename: Some(filename),
+                                    output_filename: None,
+                                };
+                                
+                                return Ok(HttpResponse::InternalServerError().json(result));
+                            }
+                        }
+                        Err(e) => {
+                            error!("Failed to execute FFmpeg: {}", e);
+                            
+                            let result = ConversionResult {
+                                success: false,
+                                message: format!("Failed to execute FFmpeg: {}", e),
+                                original_filename: Some(filename),
+                                output_filename: None,
+                            };
+                            
+                            return Ok(HttpResponse::InternalServerError().json(result));
+                        }
                     }
                 }
                 Err(e) => {
-                    error!("Failed to execute FFmpeg: {}", e);
+                    error!("Failed to probe file: {}", e);
                     
                     let result = ConversionResult {
                         success: false,
-                        message: format!("Failed to execute FFmpeg: {}", e),
-                        original_filename: None,
+                        message: format!("Failed to analyze file: {}. Is FFmpeg installed?", e),
+                        original_filename: Some(filename),
                         output_filename: None,
                     };
                     
@@ -170,7 +229,7 @@ async fn download(req: web::Path<String>) -> impl Responder {
 async fn main() -> std::io::Result<()> {
     env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
     
-    info!("Starting server at http://127.0.0.1:8080");
+    info!("Starting server at http://127.0.0.1:8082");
     
     // Initialize templates
     let mut tera = Tera::default();
@@ -187,7 +246,7 @@ async fn main() -> std::io::Result<()> {
             .service(Files::new("/static", "./static").show_files_listing())
             .service(Files::new("/output", "./output").show_files_listing())
     })
-    .bind("127.0.0.1:8080")?
+    .bind("127.0.0.1:8082")?
     .run()
     .await
 }
