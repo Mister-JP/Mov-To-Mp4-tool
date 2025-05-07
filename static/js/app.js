@@ -86,6 +86,8 @@ document.addEventListener('DOMContentLoaded', () => {
         // Show file info and hide drop area
         dropArea.style.display = 'none';
         fileInfo.style.display = 'block';
+        progressContainer.style.display = 'none'; // Ensure progress is hidden when new file is selected
+        resultContainer.style.display = 'none'; // Ensure result is hidden
     }
     
     // Format file size
@@ -101,13 +103,18 @@ document.addEventListener('DOMContentLoaded', () => {
     
     function resetUI() {
         selectedFile = null;
-        fileInput.value = '';
+        fileInput.value = ''; // Reset file input
         dropArea.style.display = 'block';
         fileInfo.style.display = 'none';
-        progressContainer.style.display = 'none';
+        // If you made the HTML change for progressContainer to be display:block by default,
+        // you might want to hide it here or rely on the page load state.
+        // For testing the initial visibility, we keep it as it was.
+        // For normal operation, JS would hide it:
+        // progressContainer.style.display = 'none'; 
         resultContainer.style.display = 'none';
         resultSuccess.style.display = 'none';
         resultError.style.display = 'none';
+        updateProgress(0); // Reset progress bar visuals
     }
     
     // Convert button event
@@ -119,6 +126,8 @@ document.addEventListener('DOMContentLoaded', () => {
         // Show progress
         fileInfo.style.display = 'none';
         progressContainer.style.display = 'block';
+        resultContainer.style.display = 'none'; // Hide previous results
+        updateProgress(0); // Reset progress bar
         
         // Simulate progress (actual progress isn't available from the server)
         let progressValue = 0;
@@ -151,26 +160,34 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (data.success) {
                     // Success
                     resultSuccess.style.display = 'block';
+                    resultError.style.display = 'none';
                     
                     // Set download link
                     if (data.output_filename) {
-                        downloadBtn.addEventListener('click', () => {
+                        // Remove previous event listener if any to avoid multiple downloads
+                        const newDownloadBtn = downloadBtn.cloneNode(true);
+                        downloadBtn.parentNode.replaceChild(newDownloadBtn, downloadBtn);
+                        newDownloadBtn.addEventListener('click', () => {
                             window.location.href = `/download/${data.output_filename}`;
                         });
                     }
                 } else {
                     // Error
                     resultError.style.display = 'block';
+                    resultSuccess.style.display = 'none';
                     errorMessage.textContent = data.message || 'An error occurred during conversion';
                 }
             }, 500);
         })
         .catch(error => {
             clearInterval(progressInterval);
+            updateProgress(0); // Reset progress on error too
             progressContainer.style.display = 'none';
             resultContainer.style.display = 'block';
             resultError.style.display = 'block';
-            errorMessage.textContent = 'Network error: Could not connect to server';
+            resultSuccess.style.display = 'none';
+            errorMessage.textContent = 'Network error: Could not connect to server. ' + error;
+            console.error('Fetch error:', error);
         });
     }
     
@@ -183,4 +200,9 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // Try again button event
     tryAgainBtn.addEventListener('click', resetUI);
+
+    // Initial UI state setup - if progress container is visible by HTML default,
+    // and we want JS to control it from the start, hide it here.
+    // For the specific request of making it initially visible via HTML, we can omit this.
+    // progressContainer.style.display = 'none'; 
 });
